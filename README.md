@@ -54,10 +54,12 @@ tests/               Unit tests
 - [x] Policy-value network
 - [x] PUCT MCTS
 - [x] Self-play generation
-- [x] Training loop with promotion gate
+- [x] Training loop with promotion gate + full cross-session resume (tested)
 - [x] Net-vs-net evaluation arena
+- [x] Config tuned for T4 feasibility (measured: ~28min/iter -> ~7min/iter target)
 - [ ] Solver integration for ground-truth move-quality grading
-- [ ] Full training run on Colab (baseline config)
+- [ ] Full baseline training run on Colab
+- [ ] Batched MCTS across self-play games (perf, optional -- see Performance notes)
 - [ ] Ablation runs
 - [ ] Training curve / ablation plots + writeup
 
@@ -90,13 +92,32 @@ python scripts/run_training.py --config baseline
 
 ## Performance notes (for Colab/T4 budget)
 
-Self-play is the bottleneck, and `self_play.py` currently runs games
-strictly sequentially for clarity/debuggability. The straightforward
-speedup — batching MCTS leaf evaluations across several simultaneous
-self-play games so the GPU forward pass processes a batch instead of one
-board at a time — is a documented but not-yet-built extension. Worth
-doing once the sequential version is confirmed to train correctly, since
-it's a several-x speedup for very little algorithmic risk.
+**Measured on Colab T4:** the original draft config (200 sims, 100
+self-play games, 40 eval games) took **~28 min/iteration**, which would
+put a 40-iteration run at ~19 hours -- not viable on free-tier Colab.
+Current baseline defaults (100 sims, 50 self-play games, 20 eval games)
+target ~7 min/iteration (~4.5 hrs total), based on cost scaling roughly
+as `(games_per_iteration + eval_games) * n_simulations`. **Re-measure
+with `--iterations 1` after any config change** before committing to a
+full run -- don't trust the math blindly.
+
+Self-play and eval currently run MCTS strictly sequentially: each
+simulation is a separate GPU forward pass on a single board (batch size
+1), which badly underutilizes a T4. This is the actual root cause of the
+slowdown, and tuning down game/sim counts (above) is a workaround, not a
+fix. The real fix -- **batching MCTS leaf evaluations across several
+simultaneous self-play games** so the GPU processes e.g. 32 boards per
+forward pass instead of 1 -- is a documented, not-yet-built extension.
+Expected to be a 5-10x speedup on GPU. Worth doing once the sequential
+version is confirmed to train correctly end-to-end (it has been, see
+Status above), since it's a meaningful systems optimization with low
+algorithmic risk, and a stronger story than just cutting hyperparameters:
+"identified sequential single-sample GPU calls as the self-play
+bottleneck and rewrote it to batch across parallel games" vs. "reduced
+simulation count." Priority: implement if time remains after the
+baseline run + ablations are done and reproducibly checkpointed --
+correctness and a complete evaluation story matter more than speed for
+the writeup.
 
 ## What's deliberately *not* reproduced
 
