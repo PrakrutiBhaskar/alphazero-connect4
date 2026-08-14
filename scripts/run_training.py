@@ -5,13 +5,16 @@ Usage:
     python scripts/run_training.py --config baseline
     python scripts/run_training.py --config sims_800 --checkpoint-dir checkpoints/sims_800
 
-Designed to be resumable across Colab sessions: rerun with the same
---checkpoint-dir and the script picks up the latest checkpoint rather than
-starting over, since a T4 Colab session can disconnect mid-run.
+Resumable across Colab sessions: rerun with the same --checkpoint-dir and
+the script picks up exactly where it left off (network weights, optimizer
+state, replay buffer, RNG state, iteration count) via
+`<checkpoint-dir>/resume_state.pt`. A dropped Colab session costs at most
+one in-progress iteration, not the whole run. Use --no-resume to force a
+fresh start in the same directory (e.g. after deliberately changing the
+config for that dir, since resume state and a changed config can conflict).
 """
 
 import argparse
-import glob
 import os
 import sys
 
@@ -19,13 +22,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import torch
 from src.config import ABLATION_CONFIGS, Config
-from src.network import PolicyValueNet
-from src.train import run_training
-
-
-def find_latest_checkpoint(checkpoint_dir: str):
-    ckpts = sorted(glob.glob(os.path.join(checkpoint_dir, "iter_*.pt")))
-    return ckpts[-1] if ckpts else None
+from src.train import run_training, _resume_path
 
 
 def main():
@@ -35,6 +32,8 @@ def main():
                          help="Override the config's default checkpoint dir")
     parser.add_argument("--iterations", type=int, default=None,
                          help="Override num_iterations for a quick smoke test")
+    parser.add_argument("--no-resume", action="store_true",
+                         help="Ignore any existing resume_state.pt and start fresh")
     args = parser.parse_args()
 
     cfg = ABLATION_CONFIGS[args.config]
@@ -51,13 +50,11 @@ def main():
     print(f"Config: {args.config}")
     print(cfg)
 
-    latest = find_latest_checkpoint(cfg.checkpoint_dir)
-    if latest:
-        print(f"NOTE: found existing checkpoint {latest}. This script currently "
-              f"starts fresh training regardless -- wire up checkpoint loading "
-              f"into run_training() before relying on this for multi-session runs.")
+    if os.path.exists(_resume_path(cfg)) and not args.no_resume:
+        print("Existing resume state found -- continuing that run. "
+              "Pass --no-resume to discard it and start fresh instead.")
 
-    best_net, history = run_training(cfg)
+    best_net, history = run_training(cfg, resume=not args.no_resume)
 
     final_path = os.path.join(cfg.checkpoint_dir, "final.pt")
     torch.save(best_net.state_dict(), final_path)
